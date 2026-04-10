@@ -1,0 +1,258 @@
+---
+title: "Chen-Proposal"
+output:
+  pdf_document: default
+  html_document:
+    includes:
+      in_header: header.html
+    css: ./lab.css
+    highlight: pygments
+    theme: cerulean
+    toc: true
+    toc_float: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r load-packages, message=FALSE}
+library(tidyverse)
+library(openintro)
+library(infer)
+library(dplyr)
+library(readr)
+```
+
+================
+Data Preparation
+================
+```{r}
+# Load File
+manydogs_2024 <- read_csv("~/Desktop/DATA606/manydogs_etal_2024_data.csv", show_col_types = FALSE)
+
+# Set Seed
+set.seed(1023)
+
+# Clean and Prepare Data
+# Filter out error and incomplete experiments
+# Assign Yes/No to aggression answers to allow for mean calculations & aggregation
+# Add up each row for aggression score
+manydogs_2024_clean <- manydogs_2024 %>% filter(experiment_status=="Included") 
+manydogs_2024_clean <- manydogs_2024_clean[c("environment", "owned_status", "sex", "age", "desexed", "purebred", "other_household_dogs", "num_household_dogs", "origin", "guardian_gender", "guardian_age", "cbarq_aggression_1","cbarq_aggression_2","cbarq_aggression_3","cbarq_aggression_4","cbarq_aggression_5","cbarq_aggression_6","cbarq_aggression_7","cbarq_aggression_8","cbarq_aggression_9","cbarq_aggression_10","cbarq_aggression_11","cbarq_aggression_12","cbarq_aggression_13","cbarq_aggression_14","cbarq_aggression_15","cbarq_aggression_16","cbarq_aggression_17","cbarq_aggression_18","cbarq_aggression_19","cbarq_aggression_20","cbarq_aggression_21","cbarq_aggression_22","cbarq_aggression_23","cbarq_aggression_24","cbarq_aggression_25","cbarq_aggression_26","cbarq_aggression_27")]
+
+
+#create new agg_score using Yes/No methodology
+for (i in 1:27) {
+  var_name <- paste0("cbarq_aggression_", i)
+  new_var  <- paste0("1agg", i)
+  
+  manydogs_2024_clean <- manydogs_2024_clean %>% 
+    drop_na(all_of(var_name)) %>%  
+    mutate(!!new_var := ifelse(.data[[var_name]] %in% c("No aggression", "Not observed"), 0, 1))
+}
+
+manydogs_2024_clean <- manydogs_2024_clean %>% mutate(agg_score = rowSums(across(starts_with("1agg")), na.rm = TRUE))
+
+
+# Vector of aggression item names
+agg_items <- paste0("cbarq_aggression_", 1:27)
+
+# Lookup table
+agg_map <- c(
+  "No aggression"       = 0,
+  "Not observed"        = 0,
+  "Mild aggression"     = 1,
+  "Moderate aggression" = 2,
+  "Serious aggression"  = 3,
+  "High aggression"     = 3
+)
+
+manydogs_2024_clean_v2 <- manydogs_2024_clean %>%
+  dplyr::mutate(
+    dplyr::across(
+      .cols  = all_of(agg_items),
+      .fns   = ~ unname(agg_map[.x]),
+      .names = "alt_agg_{col}"     # <-- now names become: agg_cbarq_aggression_1
+    )
+  ) %>%
+  dplyr::mutate(
+    adjusted_agg_score = rowSums(dplyr::pick(starts_with("alt_agg_")), na.rm = TRUE)
+  )
+
+```
+
+
+
+Revised Research question
+What are factors which can lead to dog aggression.
+
+What are the cases, and how many are there?
+There are 704 cases (studies) collected from 20 research sites across eight countries.  After filtering for incomplete surveys/NAs, we are left with 155 observations which will be used.
+
+
+Response: What is the response variable, and what type is it (numerical/categorical)?
+There are 27 questions related to aggression which require the guardian to choose their response level: 
+No aggression (No visible signs of aggression)
+Mild aggression
+Moderate aggression (Growling/barking/baring teeth)
+High aggression
+Serious aggression (Snaps, bites, or attempts to bite)
+Not observed
+
+===============================
+Aggression score distributions:
+===============================
+
+The aggression score was computed two ways:
+(1)Any scores moderate and above were counted as 1 and total was tallied
+(2)Scores were ranked 0-3 with 3 being severe and total was tallied
+
+The second option resulted in a wider disbursement of results & more outliers
+
+
+```{r}
+ggplot(data=manydogs_2024_clean_v2, aes(x=agg_score)) + geom_bar(fill="blue") + ggtitle(paste0("Distribution of Aggression Level"))
+summary(manydogs_2024_clean_v2$agg_score)
+ggplot(data=manydogs_2024_clean_v2, aes(x=adjusted_agg_score)) + geom_bar(fill="purple")+ ggtitle(paste0("Distribution of Aggression Level (adjusted)"))
+summary(manydogs_2024_clean_v2$adjusted_agg_score)
+```
+
+
+
+********
+Project Worksheet:
+
+Section 1: Summary Stats
+
+```{r}
+#agg_score vs. adjusted_agg_score
+ggplot(manydogs_2024_clean_v2, aes(x=adjusted_agg_score, y=agg_score)) + geom_point() + geom_smooth(se=FALSE)
+
+ggplot(manydogs_2024_clean_v2, aes(x = environment, y = agg_score)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(title = "Aggression Scores by Environment",
+       x = "Environment", y = "Aggression Score")
+
+ggplot(manydogs_2024_clean_v2, aes(x = environment, y = adjusted_agg_score)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(title = "Aggression Scores by Environment (adjusted)",
+       x = "Environment", y = "Adjusted Aggression Score")
+
+```
+
+
+
+Section 2: Regression Analysis
+
+For adjusted agg score
+```{r}
+# full variables - adj R .1787
+aggression_test <- lm(adjusted_agg_score ~ environment + owned_status + 
+    sex + age + desexed + purebred + num_household_dogs + origin + 
+    guardian_gender, data = manydogs_2024_clean_v2)
+summary(aggression_test)
+
+# remove environment, age, desexed,sex, guardian gender -  adj R .2034  -> Optimal for explanatory regression
+aggression_test <- lm(adjusted_agg_score ~ owned_status + purebred + num_household_dogs + origin, data = manydogs_2024_clean_v2)
+summary(aggression_test)
+
+# added back age - adj .205
+aggression_test <- lm(adjusted_agg_score ~ owned_status + purebred + age + num_household_dogs + origin, data = manydogs_2024_clean_v2)
+summary(aggression_test)
+
+# version 2 -adj R .1959
+aggression_test_v2 <- lm(agg_score ~ + owned_status + purebred + age + num_household_dogs + origin, data = manydogs_2024_clean_v2)
+summary(aggression_test_v2)
+```
+
+Regression analysis seems to indicate dogs from private homes with other dogs and the origin of the dog is from a shelter are best predictors of aggression.  However, the low regression score suggests these factors are limited in their ability to predict aggression behavior.  
+
+
+Section 3: Regression Testing
+
+```{r}
+#residuals vs. fitted values
+ggplot(data = aggression_test, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+  
+#distribution of residuals
+ggplot(data = aggression_test, aes(x = .resid)) +
+  geom_histogram(bins = 25) +
+  xlab("Residuals")
+
+#normal prob plot of residuals  
+ggplot(data = aggression_test, aes(sample = .resid)) +
+  stat_qq()
+
+ggplot(data = aggression_test, aes(x = owned_status, y = .resid)) +
+  geom_boxplot(fill = "skyblue", color = "black")
+
+ggplot(data = aggression_test, aes(x = num_household_dogs, y = .resid)) +
+  geom_boxplot(fill = "skyblue", color = "black")
+
+ggplot(data = aggression_test, aes(x = origin, y = .resid)) +
+  geom_boxplot(fill = "skyblue", color = "black")
+
+ggplot(data = aggression_test, aes(x = purebred, y = .resid)) +
+  geom_boxplot(fill = "skyblue", color = "black")
+
+ggplot(data = aggression_test, aes(x = age, y = .resid)) +
+  geom_point() + geom_smooth(method = "lm", se = FALSE)
+
+
+ggplot(data=manydogs_2024_clean_v2, aes(x=owned_status, y=adjusted_agg_score)) + geom_boxplot(fill = "skyblue", color = "black")
+
+ggplot(data=manydogs_2024_clean_v2, aes(x=num_household_dogs, y=adjusted_agg_score)) + geom_boxplot(fill = "skyblue", color = "black")
+
+ggplot(data=manydogs_2024_clean_v2, aes(x=origin, y=adjusted_agg_score)) + geom_boxplot(fill = "skyblue", color = "black")
+
+ggplot(data=manydogs_2024_clean_v2, aes(x=purebred, y=adjusted_agg_score)) + geom_boxplot(fill = "skyblue", color = "black")
+
+ggplot(data=manydogs_2024_clean_v2, aes(x=age, y=adjusted_agg_score)) + geom_point() + geom_smooth(method = "lm", se = FALSE)
+```
+
+Section 4: ANOVA table
+
+```{r}
+# create ANOVA tables to test significance that the mean between groups is different.
+
+#num_household_dogs  .0745*
+model <- aov(adjusted_agg_score ~ num_household_dogs, data = manydogs_2024_clean_v2)
+summary(model)
+
+#environment  .707
+model <- aov(adjusted_agg_score ~ environment, data = manydogs_2024_clean_v2)
+summary(model)
+
+
+#owned_status 2.59e-05**
+model <- aov(adjusted_agg_score ~ owned_status, data = manydogs_2024_clean_v2)
+summary(model)
+
+#origin 0.001**
+model <- aov(adjusted_agg_score ~ origin, data = manydogs_2024_clean_v2)
+summary(model)
+
+model <- aov(adjusted_agg_score ~ purebred, data = manydogs_2024_clean_v2)
+summary(model)
+
+#age 0.027*
+model <- aov(adjusted_agg_score ~ age, data = manydogs_2024_clean_v2)
+summary(model)
+
+# envi vs. # household dogs .598
+model <- aov(adjusted_agg_score ~ environment * num_household_dogs, data = manydogs_2024_clean_v2)
+summary(model)
+
+# owned status x number of dogs .593
+model <- aov(adjusted_agg_score ~ owned_status * num_household_dogs, data = manydogs_2024_clean_v2)
+summary(model)
+
+```
+Group means is slightly different
